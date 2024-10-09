@@ -7,15 +7,15 @@ defmodule DotcomWeb.Components.LiveComponents.TripPlannerForm do
   import DotcomWeb.ViewHelpers, only: [svg: 1]
   import Phoenix.HTML.Form, only: [input_name: 2, input_value: 2, input_id: 2]
 
-  import MbtaMetro.Components.Feedback
-  import MbtaMetro.Components.InputGroup
+  import MbtaMetro.Components.{Feedback, InputGroup}
 
   alias Dotcom.TripPlan.{InputForm, OpenTripPlanner}
+  alias MbtaMetro.Live.DatePicker
 
   @all_modes [:RAIL, :SUBWAY, :BUS, :FERRY]
   @form_defaults %{
     "datetime_type" => :now,
-    "datetime" => NaiveDateTime.local_now(),
+    "datetime" => NaiveDateTime.utc_now(),
     "modes" => @all_modes,
     "wheelchair" => true
   }
@@ -101,16 +101,13 @@ defmodule DotcomWeb.Components.LiveComponents.TripPlannerForm do
           >
             <%= msg %>
           </.feedback>
-          <.label :if={@show_datepicker} for="timepick">
-            <input
-              id="timepick"
-              type="datetime-local"
-              step="any"
-              name={input_name(@form, :datetime)}
-              value={input_value(@form, :datetime)}
-            />
-            <span class="sr-only">Date and time to leave at or arrive by</span>
-          </.label>
+          <.live_component
+            :if={@show_datepicker}
+            module={DatePicker}
+            config={datepicker_config()}
+            field={f[:datetime]}
+            id={:datepicker}
+          />
           <.feedback
             :for={{msg, _} <- f[:datetime_type].errors}
             :if={used_input?(f[:datetime_type])}
@@ -194,8 +191,23 @@ defmodule DotcomWeb.Components.LiveComponents.TripPlannerForm do
   end
 
   @impl true
-  def handle_event("toggle_datepicker", %{"value" => datetime_value}, socket) do
-    {:noreply, assign(socket, :show_datepicker, datetime_value !== "now")}
+  @doc """
+  If the user selects "now" for the date and time, hide the datepicker.
+  This will destroy the flatpickr instance.
+
+  If the user selects arrivey by or leave at, then we show the datepicker and set the time to the nearest 5 minutes.
+  """
+  def handle_event("toggle_datepicker", %{"value" => "now"}, socket) do
+    {:noreply, assign(socket, show_datepicker: false)}
+  end
+
+  def handle_event("toggle_datepicker", _, socket) do
+    new_socket =
+      socket
+      |> assign(show_datepicker: true)
+      |> push_event("set-datetime", %{datetime: nearest_5_minutes() |> IO.inspect()})
+
+    {:noreply, new_socket}
   end
 
   def handle_event("validate", %{"input_form" => params}, socket) do
@@ -225,11 +237,13 @@ defmodule DotcomWeb.Components.LiveComponents.TripPlannerForm do
     end
   end
 
-  defp plan(data, on_submit) do
-    _ = on_submit.(data)
-    result = OpenTripPlanner.plan(data)
-    _ = on_submit.(result)
-    result
+  defp datepicker_config do
+    %{
+      default_date: Timex.now(),
+      enable_time: true,
+      max_date: Timex.now() |> Timex.shift(days: 3),
+      min_date: Timex.now() |> Timex.shift(days: -3)
+    }
   end
 
   defp mode_atom(mode) do
@@ -251,6 +265,22 @@ defmodule DotcomWeb.Components.LiveComponents.TripPlannerForm do
       other ->
         DotcomWeb.ViewHelpers.mode_name(other)
     end
+  end
+
+  defp nearest_5_minutes do
+    datetime = Timex.now()
+    minutes = datetime.minute
+    rounded_minutes = Float.ceil(minutes / 5) * 5
+    added_minutes = Kernel.trunc(rounded_minutes - minutes)
+
+    Timex.shift(datetime, minutes: added_minutes)
+  end
+
+  defp plan(data, on_submit) do
+    _ = on_submit.(data)
+    result = OpenTripPlanner.plan(data)
+    _ = on_submit.(result)
+    result
   end
 
   defp selected_modes(modes) when modes == @all_modes do
